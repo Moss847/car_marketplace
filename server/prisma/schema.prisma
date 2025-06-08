@@ -10,6 +10,11 @@ datasource db {
   url      = env("DATABASE_URL")
 }
 
+enum Role {
+  USER
+  ADMIN
+}
+
 model Favorite {
   id        String   @id @default(uuid())
   userId    String
@@ -30,6 +35,7 @@ model User {
   firstName     String
   lastName      String
   phone         String?
+  role          Role        @default(USER)
   createdAt     DateTime  @default(now())
   updatedAt     DateTime  @updatedAt
   listings      Listing[]

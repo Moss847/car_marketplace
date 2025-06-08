@@ -1,19 +1,11 @@
 import express, { Request, Response, NextFunction, RequestHandler } from 'express';
-import { PrismaClient } from '@prisma/client';
+import { PrismaClient, Role } from '@prisma/client';
 import { auth } from '../middleware/auth';
 import { upload } from '../config/cloudinary';
 import multer from 'multer';
 import fs from 'fs';
 import path from 'path';
 import { getBrandName, getModelName } from '../data/cars';
-
-// Расширяем тип Request для аутентифицированных запросов
-interface AuthRequest extends Request {
-  user: {
-    id: string;
-  };
-  files?: Express.Multer.File[];
-}
 
 const router = express.Router();
 const prisma = new PrismaClient();
@@ -37,8 +29,14 @@ const handleFileUpload: RequestHandler = (req, res, next) => {
 };
 
 // Create new listing
-const createListing: RequestHandler = async (req: AuthRequest, res: Response) => {
+const createListing: RequestHandler = async (req: Request, res: Response) => {
   try {
+    // Проверяем роль пользователя: администратор не может создавать объявления
+    if (req.user?.role === Role.ADMIN) {
+      res.status(403).json({ error: 'Администраторы не могут создавать объявления.' });
+      return;
+    }
+
     const {
       title,
       description,
@@ -55,11 +53,12 @@ const createListing: RequestHandler = async (req: AuthRequest, res: Response) =>
 
     // Проверяем наличие файлов
     if (!req.files || !Array.isArray(req.files) || req.files.length === 0) {
-      return res.status(400).json({ error: 'No images uploaded' });
+      res.status(400).json({ error: 'No images uploaded' });
+      return;
     }
 
     // Получаем пути к загруженным изображениям
-    const images = req.files.map(file => `/uploads/cars/${file.filename}`);
+    const images = (req.files as Express.Multer.File[]).map(file => `/uploads/cars/${file.filename}`);
 
     const listing = await prisma.listing.create({
       data: {
@@ -75,7 +74,7 @@ const createListing: RequestHandler = async (req: AuthRequest, res: Response) =>
         transmission,
         images,
         location,
-        userId: req.user.id,
+        userId: req.user!.id,
       },
       include: {
         user: {
@@ -91,22 +90,24 @@ const createListing: RequestHandler = async (req: AuthRequest, res: Response) =>
     });
 
     res.status(201).json(listing);
+    return;
   } catch (error) {
     console.error('Error creating listing:', error);
     // Если произошла ошибка, удаляем загруженные файлы
     if (req.files && Array.isArray(req.files)) {
-      req.files.forEach(file => {
+      (req.files as Express.Multer.File[]).forEach(file => {
         fs.unlink(file.path, (err) => {
           if (err) console.error('Error deleting file:', err);
         });
       });
     }
     res.status(400).json({ error: 'Error creating listing' });
+    return;
   }
 };
 
 // Get all listings with filters
-const getListings: RequestHandler = async (req, res) => {
+const getListings: RequestHandler = async (req: Request, res: Response) => {
   try {
     const {
       brand,
@@ -167,15 +168,17 @@ const getListings: RequestHandler = async (req, res) => {
       modelName: getModelName(listing.brand, listing.model)
     }));
 
-    return res.json(transformedListings);
+    res.json(transformedListings);
+    return;
   } catch (error) {
     console.error('Error fetching listings:', error);
-    return res.status(500).json({ error: 'Error fetching listings' });
+    res.status(500).json({ error: 'Error fetching listings' });
+    return;
   }
 };
 
 // Get single listing
-const getListing: RequestHandler = async (req, res) => {
+const getListing: RequestHandler = async (req: Request, res: Response) => {
   try {
     const listing = await prisma.listing.findUnique({
       where: { id: req.params.id },
@@ -193,7 +196,8 @@ const getListing: RequestHandler = async (req, res) => {
     });
 
     if (!listing) {
-      return res.status(404).json({ error: 'Listing not found' });
+      res.status(404).json({ error: 'Listing not found' });
+      return;
     }
 
     // Добавляем названия марки и модели
@@ -204,24 +208,29 @@ const getListing: RequestHandler = async (req, res) => {
     };
 
     res.json(transformedListing);
+    return;
   } catch (error) {
     res.status(400).json({ error: 'Error fetching listing' });
+    return;
   }
 };
 
 // Update listing
-const updateListing: RequestHandler = async (req: AuthRequest, res) => {
+const updateListing: RequestHandler = async (req: Request, res: Response) => {
   try {
     const listing = await prisma.listing.findUnique({
       where: { id: req.params.id },
     });
 
     if (!listing) {
-      return res.status(404).json({ error: 'Listing not found' });
+      res.status(404).json({ error: 'Listing not found' });
+      return;
     }
 
-    if (listing.userId !== req.user.id) {
-      return res.status(403).json({ error: 'Not authorized' });
+    // Администратор может обновлять любые объявления, обычный пользователь - только свои
+    if (req.user?.role !== Role.ADMIN && listing.userId !== req.user?.id) {
+      res.status(403).json({ error: 'Недостаточно прав для обновления этого объявления.' });
+      return;
     }
 
     const updates = Object.keys(req.body);
@@ -242,7 +251,8 @@ const updateListing: RequestHandler = async (req: AuthRequest, res) => {
     const isValidOperation = updates.every((update) => allowedUpdates.includes(update));
 
     if (!isValidOperation) {
-      return res.status(400).json({ error: 'Invalid updates' });
+      res.status(400).json({ error: 'Invalid updates' });
+      return;
     }
 
     const updatedListing = await prisma.listing.update({
@@ -262,47 +272,59 @@ const updateListing: RequestHandler = async (req: AuthRequest, res) => {
     });
 
     res.json(updatedListing);
+    return;
   } catch (error) {
     res.status(400).json({ error: 'Error updating listing' });
+    return;
   }
 };
 
-// Delete listing
-const deleteListing: RequestHandler = async (req, res) => {
+// Delete listing (soft delete)
+const deleteListing: RequestHandler = async (req: Request, res: Response) => {
   try {
-    const listingId = req.params.id;
-    const userId = (req as any).user.id;
+    // Проверяем, что пользователь аутентифицирован
+    if (!req.user) {
+      res.status(401).json({ error: 'Не аутентифицирован. Пожалуйста, войдите в систему.' });
+      return;
+    }
 
     const listing = await prisma.listing.findUnique({
-      where: { id: listingId }
+      where: { id: req.params.id },
     });
 
     if (!listing) {
-      return res.status(404).json({ error: 'Listing not found' });
+      res.status(404).json({ error: 'Объявление не найдено' });
+      return;
     }
 
-    if (listing.userId !== userId) {
-      return res.status(403).json({ error: 'Not authorized to delete this listing' });
+    // Администратор может удалить любое объявление, обычный пользователь - только свое
+    if (req.user.role !== Role.ADMIN && listing.userId !== req.user.id) {
+      res.status(403).json({ error: 'Недостаточно прав для удаления этого объявления' });
+      return;
     }
 
-    // Мягкое удаление объявления
-    await prisma.listing.update({
-      where: { id: listingId },
-      data: {
-        deletedAt: new Date()
-      }
+    const updatedListing = await prisma.listing.update({
+      where: { id: req.params.id },
+      data: { deletedAt: new Date() },
     });
 
     res.json({ message: 'Listing deleted successfully' });
+    return;
   } catch (error) {
     console.error('Error deleting listing:', error);
     res.status(500).json({ error: 'Error deleting listing' });
+    return;
   }
 };
 
 // Get user listings
-const getUserListings: RequestHandler = async (req: AuthRequest, res) => {
+const getUserListings: RequestHandler = async (req: Request, res: Response) => {
   try {
+    if (!req.user) {
+      res.status(401).json({ error: 'Не аутентифицирован. Пожалуйста, войдите в систему.' });
+      return;
+    }
+
     const listings = await prisma.listing.findMany({
       where: {
         userId: req.user.id
@@ -331,15 +353,29 @@ const getUserListings: RequestHandler = async (req: AuthRequest, res) => {
     }));
 
     res.json(transformedListings);
+    return;
   } catch (error) {
     console.error('Error fetching user listings:', error);
     res.status(500).json({ error: 'Error fetching user listings' });
+    return;
   }
 };
 
 // Add listing to favorites
-const addToFavorites: RequestHandler = async (req: AuthRequest, res: Response) => {
+const addToFavorites: RequestHandler = async (req: Request, res: Response) => {
   try {
+    // Проверяем, что пользователь аутентифицирован
+    if (!req.user) {
+      res.status(401).json({ error: 'Не аутентифицирован. Пожалуйста, войдите в систему.' });
+      return;
+    }
+
+    // Администратор не может добавлять в избранное
+    if (req.user.role === Role.ADMIN) {
+      res.status(403).json({ error: 'Доступ запрещен. Администраторы не могут добавлять в избранное.' });
+      return;
+    }
+
     const listingId = req.params.id;
     const userId = req.user.id;
 
@@ -349,12 +385,14 @@ const addToFavorites: RequestHandler = async (req: AuthRequest, res: Response) =
     });
 
     if (!listing) {
-      return res.status(404).json({ error: 'Listing not found' });
+      res.status(404).json({ error: 'Listing not found' });
+      return;
     }
 
     // Check if user is trying to add their own listing
     if (listing.userId === userId) {
-      return res.status(400).json({ error: 'You cannot add your own listing to favorites' });
+      res.status(400).json({ error: 'You cannot add your own listing to favorites' });
+      return;
     }
 
     // Check if listing is already in favorites
@@ -366,7 +404,8 @@ const addToFavorites: RequestHandler = async (req: AuthRequest, res: Response) =
     });
 
     if (existingFavorite) {
-      return res.status(400).json({ error: 'Listing is already in favorites' });
+      res.status(400).json({ error: 'Listing is already in favorites' });
+      return;
     }
 
     // Add to favorites
@@ -378,15 +417,29 @@ const addToFavorites: RequestHandler = async (req: AuthRequest, res: Response) =
     });
 
     res.json({ message: 'Added to favorites' });
+    return;
   } catch (error) {
     console.error('Error adding to favorites:', error);
     res.status(400).json({ error: 'Error adding to favorites' });
+    return;
   }
 };
 
 // Remove listing from favorites
-const removeFromFavorites: RequestHandler = async (req: AuthRequest, res: Response) => {
+const removeFromFavorites: RequestHandler = async (req: Request, res: Response) => {
   try {
+    // Проверяем, что пользователь аутентифицирован
+    if (!req.user) {
+      res.status(401).json({ error: 'Не аутентифицирован. Пожалуйста, войдите в систему.' });
+      return;
+    }
+
+    // Администратор не может удалять из избранного
+    if (req.user.role === Role.ADMIN) {
+      res.status(403).json({ error: 'Доступ запрещен. Администраторы не могут удалять из избранного.' });
+      return;
+    }
+
     const listingId = req.params.id;
     const userId = req.user.id;
 
@@ -399,15 +452,29 @@ const removeFromFavorites: RequestHandler = async (req: AuthRequest, res: Respon
     });
 
     res.json({ message: 'Removed from favorites' });
+    return;
   } catch (error) {
     console.error('Error removing from favorites:', error);
     res.status(400).json({ error: 'Error removing from favorites' });
+    return;
   }
 };
 
 // Get user's favorite listings
-const getFavorites: RequestHandler = async (req: AuthRequest, res: Response) => {
+const getFavorites: RequestHandler = async (req: Request, res: Response) => {
   try {
+    // Проверяем, что пользователь аутентифицирован
+    if (!req.user) {
+      res.status(401).json({ error: 'Не аутентифицирован. Пожалуйста, войдите в систему.' });
+      return;
+    }
+
+    // Администратор не может просматривать избранное
+    if (req.user.role === Role.ADMIN) {
+      res.status(403).json({ error: 'Доступ запрещен. Администраторы не могут просматривать избранное.' });
+      return;
+    }
+
     const favorites = await prisma.favorite.findMany({
       where: {
         userId: req.user.id,
@@ -433,28 +500,40 @@ const getFavorites: RequestHandler = async (req: AuthRequest, res: Response) => 
     });
 
     res.json(favorites.map(fav => fav.listing));
+    return;
   } catch (error) {
     console.error('Error fetching favorites:', error);
     res.status(500).json({ error: 'Error fetching favorites' });
+    return;
   }
 };
 
 // Permanent delete listing
-const permanentDeleteListing: RequestHandler = async (req, res) => {
+const permanentDeleteListing: RequestHandler = async (req: Request, res: Response) => {
   try {
     const listingId = req.params.id;
-    const userId = (req as any).user.id;
+    const userId = req.user?.id; // Используем optional chaining
+    const userRole = req.user?.role; // Используем optional chaining
 
     const listing = await prisma.listing.findUnique({
       where: { id: listingId }
     });
 
     if (!listing) {
-      return res.status(404).json({ error: 'Объявление не найдено' });
+      res.status(404).json({ error: 'Объявление не найдено' });
+      return;
     }
 
-    if (listing.userId !== userId) {
-      return res.status(403).json({ error: 'Нет прав для удаления этого объявления' });
+    // Проверяем аутентификацию
+    if (!req.user) {
+      res.status(401).json({ error: 'Не аутентифицирован. Пожалуйста, войдите в систему.' });
+      return;
+    }
+
+    // Администратор может удалить любое объявление, обычный пользователь - только свое
+    if (userRole !== Role.ADMIN && listing.userId !== userId) {
+      res.status(403).json({ error: 'Нет прав для удаления этого объявления' });
+      return;
     }
 
     // Удаляем только из избранного и помечаем объявление как удаленное
@@ -473,9 +552,11 @@ const permanentDeleteListing: RequestHandler = async (req, res) => {
     ]);
 
     res.json({ message: 'Объявление успешно удалено' });
+    return;
   } catch (error) {
     console.error('Error permanently deleting listing:', error);
     res.status(500).json({ error: 'Ошибка при удалении объявления' });
+    return;
   }
 };
 

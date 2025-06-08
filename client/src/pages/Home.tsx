@@ -3,7 +3,8 @@ import { useNavigate } from 'react-router-dom';
 import { useQuery } from '@tanstack/react-query';
 import { carBrandsApi, CarMark } from '../services/carBrandsApi';
 import { carsApi } from '../services/carsApi';
-import { useAuth } from '../hooks/useAuth';
+import { useSelector } from 'react-redux';
+import { RootState } from '../store';
 import { listings } from '../services/api';
 import ListingCard from '../components/ListingCard';
 
@@ -50,7 +51,7 @@ const POPULAR_BRANDS = [
 
 const Home: React.FC = () => {
   const navigate = useNavigate();
-  const { isAuthenticated } = useAuth();
+  const { isAuthenticated, user } = useSelector((state: RootState) => state.auth);
   const [showAll, setShowAll] = useState(false);
 
   const { data: carMarks, isLoading: isLoadingMarks, error: marksError } = useQuery({
@@ -108,7 +109,7 @@ const Home: React.FC = () => {
     <div className="max-w-7xl mx-auto px-4 py-8">
       <div className="flex gap-8">
         {/* Основной контент */}
-        <div className={`${isAuthenticated ? 'w-3/4' : 'w-full'}`}>
+        <div className={`${isAuthenticated && user?.role !== 'ADMIN' ? 'w-3/4' : 'w-full'}`}>
           <div className="grid grid-cols-5 gap-4">
             {displayedMarks?.map((mark: CarMark) => (
               <div
@@ -174,7 +175,7 @@ const Home: React.FC = () => {
         </div>
 
         {/* Секция избранного для авторизованных пользователей */}
-        {isAuthenticated && (
+        {isAuthenticated && user?.role !== 'ADMIN' && (
           <div className="w-1/4">
             <div className="bg-white rounded-lg shadow-md p-4 sticky top-4">
               <h2 className="text-xl font-semibold mb-4 flex items-center">

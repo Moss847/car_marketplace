@@ -32,20 +32,26 @@ const Navbar = () => {
             <Link to="/search" className="text-gray-600 hover:text-gray-900">
               Поиск
             </Link>
-            <Link to="/favorites" className="text-gray-600 hover:text-gray-900">
-              Избранное
-            </Link>
-            <Link to="/messages" className="text-gray-600 hover:text-gray-900">
-              Сообщения
-            </Link>
+            {user?.role !== 'ADMIN' && (
+              <>
+                <Link to="/favorites" className="text-gray-600 hover:text-gray-900">
+                  Избранное
+                </Link>
+                <Link to="/messages" className="text-gray-600 hover:text-gray-900">
+                  Сообщения
+                </Link>
+              </>
+            )}
             {isAuthenticated ? (
               <>
-                <Link
-                  to="/create-listing"
-                  className="bg-blue-600 text-white px-4 py-2 rounded hover:bg-blue-700"
-                >
-                  Создать объявление
-                </Link>
+                {user?.role !== 'ADMIN' && (
+                  <Link
+                    to="/create-listing"
+                    className="bg-blue-600 text-white px-4 py-2 rounded hover:bg-blue-700"
+                  >
+                    Создать объявление
+                  </Link>
+                )}
                 <Link
                   to="/profile"
                   className="text-gray-600 hover:text-gray-900"

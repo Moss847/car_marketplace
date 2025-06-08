@@ -36,7 +36,7 @@ export const auth = {
     api.post<AuthResponse>('/auth/login', data),
   getCurrentUser: () => api.get<AuthResponse>('/auth/me'),
   updateProfile: (data: Partial<RegisterCredentials>) =>
-    api.patch<AuthResponse>('/auth/profile', data),
+    api.patch<AuthResponse>('/auth/me', data),
 };
 
 // Listing endpoints

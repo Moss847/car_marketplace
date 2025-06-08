@@ -1,5 +1,5 @@
-import express, { Request, Response } from 'express';
-import { PrismaClient } from '@prisma/client';
+import express, { Request, Response, NextFunction, RequestHandler } from 'express';
+import { PrismaClient, User as PrismaUser, Role } from '@prisma/client';
 import bcrypt from 'bcryptjs';
 import jwt from 'jsonwebtoken';
 import { auth } from '../middleware/auth';
@@ -8,7 +8,7 @@ const router = express.Router();
 const prisma = new PrismaClient();
 
 // Register new user
-router.post('/register', async (req, res) => {
+router.post('/register', (async (req: Request, res: Response) => {
   try {
     const { email, password, firstName, lastName, phone } = req.body;
 
@@ -18,7 +18,8 @@ router.post('/register', async (req, res) => {
     });
 
     if (existingUser) {
-      return res.status(400).json({ error: 'User already exists' });
+      res.status(400).json({ error: 'User already exists' });
+      return;
     }
 
     // Hash password
@@ -39,6 +40,7 @@ router.post('/register', async (req, res) => {
         firstName: true,
         lastName: true,
         phone: true,
+        role: true,
       },
     });
 
@@ -53,10 +55,10 @@ router.post('/register', async (req, res) => {
   } catch (error) {
     res.status(400).json({ error: 'Error creating user' });
   }
-});
+}) as RequestHandler);
 
 // Login user
-router.post('/login', async (req, res) => {
+router.post('/login', (async (req: Request, res: Response) => {
   try {
     const { email, password } = req.body;
 
@@ -66,14 +68,16 @@ router.post('/login', async (req, res) => {
     });
 
     if (!user) {
-      return res.status(401).json({ error: 'Invalid credentials' });
+      res.status(401).json({ error: 'Invalid credentials' });
+      return;
     }
 
     // Check password
     const isMatch = await bcrypt.compare(password, user.password);
 
     if (!isMatch) {
-      return res.status(401).json({ error: 'Invalid credentials' });
+      res.status(401).json({ error: 'Invalid credentials' });
+      return;
     }
 
     // Generate token
@@ -90,34 +94,42 @@ router.post('/login', async (req, res) => {
         firstName: user.firstName,
         lastName: user.lastName,
         phone: user.phone,
+        role: user.role,
       },
       token,
     });
   } catch (error) {
     res.status(400).json({ error: 'Error logging in' });
   }
-});
+}) as RequestHandler);
 
 // Get current user
-router.get('/me', auth, async (req: any, res) => {
+router.get('/me', auth, (async (req: Request, res: Response) => {
   const token = req.header('Authorization')?.replace('Bearer ', '');
   res.json({
     user: req.user,
     token
   });
-});
+}) as RequestHandler);
 
 // Update user profile
-router.patch('/me', auth, async (req: any, res) => {
+router.patch('/me', auth, (async (req: Request, res: Response) => {
   const updates = Object.keys(req.body);
   const allowedUpdates = ['firstName', 'lastName', 'phone'];
   const isValidOperation = updates.every((update) => allowedUpdates.includes(update));
 
   if (!isValidOperation) {
-    return res.status(400).json({ error: 'Invalid updates' });
+    res.status(400).json({ error: 'Invalid updates' });
+    return;
   }
 
   try {
+    // Проверка, что пользователь существует (гарантировано middleware auth)
+    if (!req.user) {
+      res.status(401).json({ error: 'Пользователь не аутентифицирован' });
+      return;
+    }
+
     const user = await prisma.user.update({
       where: { id: req.user.id },
       data: req.body,
@@ -127,6 +139,7 @@ router.patch('/me', auth, async (req: any, res) => {
         firstName: true,
         lastName: true,
         phone: true,
+        role: true,
       },
     });
 
@@ -134,21 +147,23 @@ router.patch('/me', auth, async (req: any, res) => {
   } catch (error) {
     res.status(400).json({ error: 'Error updating user' });
   }
-});
+}) as RequestHandler);
 
 // Check if email exists
-router.get('/check-email', async (req: Request, res: Response) => {
+router.get('/check-email', (async (req: Request, res: Response) => {
   try {
     const email = req.query.email as string;
     
     if (!email) {
-      return res.status(400).json({ error: 'Email is required' });
+      res.status(400).json({ error: 'Email is required' });
+      return;
     }
 
     // Validate email format
     const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
     if (!emailRegex.test(email)) {
-      return res.status(400).json({ error: 'Invalid email format' });
+      res.status(400).json({ error: 'Invalid email format' });
+      return;
     }
 
     const existingUser = await prisma.user.findUnique({
@@ -156,11 +171,11 @@ router.get('/check-email', async (req: Request, res: Response) => {
       select: { id: true }
     });
 
-    return res.json({ exists: !!existingUser });
+    res.json({ exists: !!existingUser });
   } catch (error) {
     console.error('Error checking email:', error);
-    return res.status(500).json({ error: 'Internal server error' });
+    res.status(500).json({ error: 'Internal server error' });
   }
-});
+}) as RequestHandler);
 
 export default router; 

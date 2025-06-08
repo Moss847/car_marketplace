@@ -4,6 +4,7 @@ export interface User {
   firstName: string;
   lastName: string;
   phone?: string;
+  role: 'USER' | 'ADMIN';
 }
 
 export interface AuthState {

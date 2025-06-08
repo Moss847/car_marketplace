@@ -1,5 +1,5 @@
 import express, { Request, Response, RequestHandler } from 'express';
-import { PrismaClient } from '@prisma/client';
+import { PrismaClient, Role } from '@prisma/client';
 import { auth } from '../middleware/auth';
 import { Server } from 'socket.io';
 
@@ -17,9 +17,21 @@ export default (io: Server) => {
   // Получить список диалогов пользователя
   const getConversations: RequestHandler = async (req: Request, res: Response) => {
     try {
-      const userId = req.user!.id; // Используем req.user! так как auth middleware гарантирует его наличие
+      // Проверяем, что пользователь аутентифицирован
+      if (!req.user) {
+        res.status(401).json({ error: 'Не аутентифицирован. Пожалуйста, войдите в систему.' });
+        return;
+      }
 
-      // Получаем все сообщения пользователя, включая сообщения для удаленных объявлений
+      // Администратор не может просматривать сообщения
+      if (req.user.role === Role.ADMIN) {
+        res.status(403).json({ error: 'Доступ запрещен. Администраторы не могут просматривать сообщения.' });
+        return;
+      }
+
+      const userId = req.user.id;
+
+      // Получаем все сообщения пользователя
       const messages = await prisma.message.findMany({
         where: {
           OR: [
@@ -41,10 +53,7 @@ export default (io: Server) => {
         }
       });
 
-      // Группируем сообщения по объявлениям и берем последнее сообщение для каждого
-      // Необходимо скорректировать логику группировки, чтобы она не объединяла диалоги разных покупателей с одним продавцом
-      // Сейчас группировка происходит по `listing.id`, что может быть причиной объединения
-      // Нужно группировать по `listing.id` И `otherParticipantId` (другому участнику диалога)
+      // Группируем сообщения по объявлениям
       const conversationsMap = new Map();
       messages.forEach(message => {
         const otherParticipantId = message.senderId === userId ? message.receiverId : message.senderId;
@@ -53,8 +62,6 @@ export default (io: Server) => {
         if (!conversationsMap.has(conversationKey)) {
           conversationsMap.set(conversationKey, message);
         } else {
-          // Если уже есть сообщение для этой пары (объявление + участник),
-          // обновляем его, если текущее сообщение новее
           const existingMessage = conversationsMap.get(conversationKey);
           if (new Date(message.createdAt) > new Date(existingMessage.createdAt)) {
             conversationsMap.set(conversationKey, message);
@@ -63,20 +70,33 @@ export default (io: Server) => {
       });
 
       const conversations = Array.from(conversationsMap.values());
-
       res.json(conversations);
+      return;
     } catch (error) {
       console.error('Error fetching conversations:', error);
       res.status(500).json({ error: 'Error fetching conversations' });
+      return;
     }
   };
 
   // Получить сообщения для объявления
   const getMessages: RequestHandler = async (req: Request, res: Response) => {
     try {
+      // Проверяем, что пользователь аутентифицирован
+      if (!req.user) {
+        res.status(401).json({ error: 'Не аутентифицирован. Пожалуйста, войдите в систему.' });
+        return;
+      }
+
+      // Администратор не может просматривать сообщения
+      if (req.user.role === Role.ADMIN) {
+        res.status(403).json({ error: 'Доступ запрещен. Администраторы не могут просматривать сообщения.' });
+        return;
+      }
+
       const listingId = req.params.listingId;
-      const userId = req.user!.id; // Используем req.user! так как auth middleware гарантирует его наличие
-      const { otherParticipantId } = req.query; // Получаем ID другого участника из запроса
+      const userId = req.user.id;
+      const { otherParticipantId } = req.query;
 
       // Проверяем существование объявления
       const listing = await prisma.listing.findUnique({
@@ -88,7 +108,7 @@ export default (io: Server) => {
         return;
       }
 
-      // Получаем сообщения для объявления, даже если оно удалено
+      // Получаем сообщения для объявления
       const messages = await prisma.message.findMany({
         where: {
           listingId,
@@ -135,7 +155,6 @@ export default (io: Server) => {
         }
       });
 
-      console.log('Server Messages:', messages); // Debug log
       res.json({ 
         data: messages,
         listingStatus: {
@@ -143,18 +162,32 @@ export default (io: Server) => {
           deletedAt: listing.deletedAt
         }
       });
+      return;
     } catch (error) {
       console.error('Error fetching messages:', error);
       res.status(500).json({ error: 'Error fetching messages' });
+      return;
     }
   };
 
   // Отправить сообщение
   const sendMessage: RequestHandler = async (req: Request, res: Response) => {
     try {
+      // Проверяем, что пользователь аутентифицирован
+      if (!req.user) {
+        res.status(401).json({ error: 'Не аутентифицирован. Пожалуйста, войдите в систему.' });
+        return;
+      }
+
+      // Администратор не может отправлять сообщения
+      if (req.user.role === Role.ADMIN) {
+        res.status(403).json({ error: 'Доступ запрещен. Администраторы не могут отправлять сообщения.' });
+        return;
+      }
+
       const listingId = req.params.listingId;
-      const { content, receiverId } = req.body; // Получаем receiverId из тела запроса
-      const senderId = req.user!.id; // Используем req.user! так как auth middleware гарантирует его наличие
+      const { content, receiverId } = req.body;
+      const senderId = req.user.id;
 
       // Проверяем существование объявления
       const listing = await prisma.listing.findUnique({
@@ -215,14 +248,15 @@ export default (io: Server) => {
         }
       });
 
-      // Отправляем сообщение через Socket.IO всем участникам чата данного объявления
+      // Отправляем сообщение через Socket.IO
       io.to(`chat_${listingId}`).emit('new_message', message);
 
-      console.log('Server Created Message:', message); // Debug log
       res.status(201).json({ data: message });
+      return;
     } catch (error) {
       console.error('Error sending message:', error);
       res.status(500).json({ error: 'Error sending message' });
+      return;
     }
   };
 

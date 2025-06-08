@@ -1,8 +1,8 @@
 import React, { useState, useEffect } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { useSelector } from 'react-redux';
+import { useSelector, useDispatch } from 'react-redux';
 import { auth, listings } from '../services/api';
-import { RootState } from '../store';
+import { RootState, AppDispatch } from '../store';
 import { updateUser } from '../store/slices/authSlice';
 import { useListings } from '../hooks/useListings';
 import { useNavigate } from 'react-router-dom';
@@ -30,15 +30,22 @@ interface Listing {
   deletedAt?: string | null;
 }
 
+interface UpdateProfilePayload {
+  firstName?: string;
+  lastName?: string;
+  phone?: string;
+}
+
 const Profile: React.FC = () => {
   const { user, isAuthenticated, isLoading: isAuthLoading } = useSelector((state: RootState) => state.auth);
-  const { deleteListing, isDeleting } = useListings();
+  const dispatch = useDispatch<AppDispatch>();
   const [formData, setFormData] = useState<ProfileFormData>({
     firstName: '',
     lastName: '',
     email: '',
     phone: '',
   });
+  const [phoneError, setPhoneError] = useState<string | null>(null);
   const navigate = useNavigate();
   const queryClient = useQueryClient();
 
@@ -61,27 +68,45 @@ const Profile: React.FC = () => {
   });
 
   const updateProfileMutation = useMutation({
-    mutationFn: (data: ProfileFormData) => auth.updateProfile(data),
+    mutationFn: (data: UpdateProfilePayload) => auth.updateProfile(data),
     onSuccess: (response) => {
-      updateUser(response.data.user);
+      dispatch(updateUser(response.data.user));
+      queryClient.invalidateQueries({ queryKey: ['userListings'] });
     },
+    onError: (error) => {
+      console.error('Error updating profile:', error);
+    }
   });
 
   const handleChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const { name, value } = e.target;
-    setFormData((prev) => ({
-      ...prev,
-      [name]: value,
-    }));
+    if (name === 'phone') {
+      if (/[^0-9]/.test(value)) {
+        setPhoneError('Номер телефона может содержать только цифры');
+      } else {
+        setPhoneError(null);
+      }
+      const filteredValue = value.replace(/\D/g, '').slice(0, 11);
+      setFormData((prev) => ({
+        ...prev,
+        [name]: filteredValue,
+      }));
+    } else {
+      setFormData((prev) => ({
+        ...prev,
+        [name]: value,
+      }));
+    }
   };
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
-    const normalizedData = {
-      ...formData,
-      phone: normalizePhone(formData.phone)
+    const dataToSend: UpdateProfilePayload = {
+      firstName: formData.firstName,
+      lastName: formData.lastName,
+      phone: normalizePhone(formData.phone),
     };
-    updateProfileMutation.mutate(normalizedData);
+    updateProfileMutation.mutate(dataToSend);
   };
 
   const handleDeleteListing = async (id: string) => {
@@ -100,7 +125,7 @@ const Profile: React.FC = () => {
       <div className="flex justify-center items-center min-h-[50vh]">
         <div className="text-center">
           <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-primary-600 mx-auto"></div>
-          <p className="mt-4 text-gray-600">Loading profile...</p>
+          <p className="mt-4 text-gray-600">Загрузка профиля...</p>
         </div>
       </div>
     );
@@ -109,7 +134,7 @@ const Profile: React.FC = () => {
   if (!isAuthenticated) {
     return (
       <div className="text-center py-8">
-        <p className="text-gray-600">Please log in to view your profile.</p>
+        <p className="text-gray-600">Пожалуйста, войдите в систему, чтобы просмотреть свой профиль.</p>
       </div>
     );
   }
@@ -117,12 +142,12 @@ const Profile: React.FC = () => {
   return (
     <div className="max-w-4xl mx-auto space-y-8">
       <div className="card">
-        <h1 className="text-2xl font-bold mb-6">Profile</h1>
+        <h1 className="text-2xl font-bold mb-6">Профиль</h1>
         <form onSubmit={handleSubmit} className="space-y-6">
           <div className="grid grid-cols-2 gap-4">
             <div>
               <label htmlFor="firstName" className="block text-sm font-medium text-gray-700">
-                First Name
+                Имя
               </label>
               <input
                 type="text"
@@ -137,7 +162,7 @@ const Profile: React.FC = () => {
 
             <div>
               <label htmlFor="lastName" className="block text-sm font-medium text-gray-700">
-                Last Name
+                Фамилия
               </label>
               <input
                 type="text"
@@ -168,16 +193,22 @@ const Profile: React.FC = () => {
 
           <div>
             <label htmlFor="phone" className="block text-sm font-medium text-gray-700">
-              Phone Number
+              Номер телефона
             </label>
             <input
-              type="tel"
+              type="text"
               id="phone"
               name="phone"
               value={formData.phone}
               onChange={handleChange}
+              inputMode="numeric"
+              pattern="[0-9]*"
+              maxLength={11}
               className="input mt-1"
             />
+            {phoneError && (
+              <p className="text-red-500 text-sm mt-1">{phoneError}</p>
+            )}
           </div>
 
           <button
@@ -185,17 +216,17 @@ const Profile: React.FC = () => {
             disabled={updateProfileMutation.isPending}
             className="btn btn-primary w-full"
           >
-            {updateProfileMutation.isPending ? 'Updating...' : 'Update Profile'}
+            {updateProfileMutation.isPending ? 'Updating...' : 'Обновить данные'}
           </button>
         </form>
       </div>
 
       <div className="mt-8">
-        <h2 className="text-2xl font-bold mb-6">My Listings</h2>
+        <h2 className="text-2xl font-bold mb-6">Мои объявления</h2>
         {isLoadingListings ? (
           <div className="text-center py-4">
             <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-primary-600 mx-auto"></div>
-            <p className="mt-2 text-gray-600">Loading listings...</p>
+            <p className="mt-2 text-gray-600">Загрузка объявлений...</p>
           </div>
         ) : (
           userListings?.data && userListings.data.length > 0 ? (
@@ -246,7 +277,7 @@ const Profile: React.FC = () => {
               ))}
             </div>
           ) : (
-            <p className="text-gray-600">You haven't created any listings yet.</p>
+            <p className="text-gray-600">Вы еще не создали ни одного объявления.</p>
           )
         )}
       </div>

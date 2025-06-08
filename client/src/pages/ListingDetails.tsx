@@ -48,6 +48,18 @@ const ListingDetails: React.FC = () => {
     },
   });
 
+  const permanentDeleteListingMutation = useMutation({
+    mutationFn: () => listings.permanentDeleteListing(id!),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['listing', id] });
+      queryClient.invalidateQueries({ queryKey: ['userListings'] }); // На случай, если админ удаляет свое объявление
+      navigate('/search'); // Перенаправляем после удаления
+    },
+    onError: (error: any) => {
+      setError(error.response?.data?.error || 'Error permanently deleting listing');
+    }
+  });
+
   const handleContactClick = () => {
     if (!isAuthenticated) {
       navigate('/login');
@@ -98,6 +110,12 @@ const ListingDetails: React.FC = () => {
           setError(error.response?.data?.error || 'Error adding to favorites');
         }
       });
+    }
+  };
+
+  const handleDeleteListing = () => {
+    if (window.confirm('Вы уверены, что хотите полностью удалить это объявление? Это действие необратимо.')) {
+      permanentDeleteListingMutation.mutate();
     }
   };
 
@@ -167,7 +185,7 @@ const ListingDetails: React.FC = () => {
                   {data.price.toLocaleString()} ₽
                 </p>
               </div>
-              {!isOwnListing && (
+              {!isOwnListing && user?.role !== 'ADMIN' && (
                 <div className="flex flex-col items-end">
                   <button
                     onClick={handleFavoriteClick}
@@ -245,12 +263,21 @@ const ListingDetails: React.FC = () => {
               Показать информацию о продавце
             </button>
 
-            {!isOwnListing && (
+            {!isOwnListing && user?.role !== 'ADMIN' && (
               <button
                 onClick={handleContactClick}
                 className="btn btn-primary w-full"
               >
                 {isAuthenticated ? 'Связаться с продавцом' : 'Войти, чтобы связаться с продавцом'}
+              </button>
+            )}
+
+            {user?.role === 'ADMIN' && (
+              <button
+                onClick={handleDeleteListing}
+                className="btn btn-danger w-full mt-4"
+              >
+                Удалить объявление (Админ)
               </button>
             )}
           </div>

@@ -25,6 +25,7 @@ export const auth = async (req: AuthRequest, res: Response, next: NextFunction) 
         firstName: true,
         lastName: true,
         phone: true,
+        role: true,
       },
     });
 
