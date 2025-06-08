@@ -53,7 +53,29 @@ const ListingDetails: React.FC = () => {
       navigate('/login');
       return;
     }
-    navigate(`/chat/${id}`);
+    // Проверяем, что данные объявления доступны и у пользователя есть ID
+    if (listing?.data && user?.id && listing.data.user?.id) {
+      const sellerId = listing.data.user.id; // ID продавца
+      const currentUserId = user.id; // ID текущего пользователя
+
+      // Определяем otherParticipantId для URL
+      let otherParticipantId: string | null = null;
+      if (sellerId !== currentUserId) {
+        otherParticipantId = sellerId;
+      }
+      
+      if (otherParticipantId) {
+        navigate(`/messages?listingId=${id}&otherParticipantId=${otherParticipantId}`);
+      } else {
+        // Если текущий пользователь - продавец, и он пытается связаться с собой (что не должно происходить),
+        // или если otherParticipantId не определен по какой-то причине, можно перенаправить на общую страницу сообщений
+        // Также обрабатываем случай, когда продавец сам открывает страницу своего объявления
+        navigate('/messages');
+      }
+    } else {
+      // Если данных не хватает, или пользователь - продавец, перенаправляем на общую страницу сообщений
+      navigate('/messages');
+    }
   };
 
   const handleFavoriteClick = () => {
@@ -220,7 +242,7 @@ const ListingDetails: React.FC = () => {
               className="btn w-full mb-4"
               style={{ backgroundColor: '#01a749', color: 'white' }}
             >
-              Show Seller Information
+              Показать информацию о продавце
             </button>
 
             {!isOwnListing && (
@@ -228,7 +250,7 @@ const ListingDetails: React.FC = () => {
                 onClick={handleContactClick}
                 className="btn btn-primary w-full"
               >
-                {isAuthenticated ? 'Contact Seller' : 'Login to Contact Seller'}
+                {isAuthenticated ? 'Связаться с продавцом' : 'Войти, чтобы связаться с продавцом'}
               </button>
             )}
           </div>

@@ -68,10 +68,39 @@ export const listings = {
   },
 };
 
+interface Message {
+  id: string;
+  content: string;
+  senderId: string;
+  receiverId: string;
+  createdAt: string;
+  listing: {
+    id: string;
+    title: string;
+    images: string[];
+    deletedAt?: string | null;
+    user: {
+      id: string;
+      firstName: string;
+      lastName: string;
+    };
+  };
+  sender: {
+    id: string;
+    firstName: string;
+    lastName: string;
+  };
+  receiver: {
+    id: string;
+    firstName: string;
+    lastName: string;
+  };
+}
+
 // Message endpoints
 export const messages = {
-  getByListing: async (listingId: string) => {
-    const response = await api.get(`/messages/listing/${listingId}`);
+  getByListing: async (listingId: string, otherParticipantId: string) => {
+    const response = await api.get(`/messages/listing/${listingId}?otherParticipantId=${otherParticipantId}`);
     console.log('API Response for getByListing:', response); // Debug log
     return response.data;
   },
@@ -80,8 +109,8 @@ export const messages = {
     console.log('API Response for getConversations:', response); // Debug log
     return response.data;
   },
-  send: async (listingId: string, content: string) => {
-    const response = await api.post(`/messages/listing/${listingId}`, { content });
+  send: async (listingId: string, content: string, receiverId: string) => {
+    const response = await api.post(`/messages/listing/${listingId}`, { content, receiverId });
     console.log('API Response for send:', response); // Debug log
     return response.data;
   },

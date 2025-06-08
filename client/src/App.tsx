@@ -14,7 +14,6 @@ import ListingDetails from './pages/ListingDetails';
 import Profile from './pages/Profile';
 import Messages from './pages/Messages';
 import Favorites from './pages/Favorites';
-import Chat from './pages/Chat';
 import Navbar from './components/Navbar';
 
 const queryClient = new QueryClient();
@@ -52,7 +51,6 @@ const AuthInitializer = () => {
           <Route path="/" element={<Home />} />
           <Route path="/search" element={<Search />} />
           <Route path="/listings/:id" element={<ListingDetails />} />
-          <Route path="/chat/:listingId" element={<Chat />} />
           {isAuthenticated && (
             <>
               <Route

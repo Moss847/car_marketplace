@@ -1,10 +1,12 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { Link } from 'react-router-dom';
-import { messages } from '../services/api';
+import { Link, useLocation } from 'react-router-dom';
+import { messages, listings } from '../services/api';
 import LoadingSpinner from '../components/LoadingSpinner';
 import { useSelector } from 'react-redux';
 import { RootState } from '../store';
+import { io, Socket } from 'socket.io-client';
+import { Listing } from '../types/api';
 
 interface Message {
   id: string;
@@ -35,74 +37,159 @@ interface Message {
   };
 }
 
-interface MessagesResponse {
-  data: Message[];
-}
-
 const Messages: React.FC = () => {
-  const [selectedListingId, setSelectedListingId] = useState<string | null>(null);
-  const [newMessage, setNewMessage] = useState('');
-  const [isSending, setIsSending] = useState(false);
+  const location = useLocation();
+  const queryParams = new URLSearchParams(location.search);
+  const initialListingId = queryParams.get('listingId');
+  const initialOtherParticipantId = queryParams.get('otherParticipantId');
+
+  const [selectedListingId, setSelectedListingId] = useState<string | null>(initialListingId);
+  const [selectedOtherParticipantId, setSelectedOtherParticipantId] = useState<string | null>(initialOtherParticipantId);
+  const [newMessageContent, setNewMessageContent] = useState('');
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const [isListingDeleted, setIsListingDeleted] = useState(false);
   const queryClient = useQueryClient();
-  const { user } = useSelector((state: RootState) => state.auth);
+  const { user, isAuthenticated } = useSelector((state: RootState) => state.auth);
+  const socketRef = useRef<Socket | null>(null);
 
-  const { data: conversationsData, isLoading: isLoadingConversations } = useQuery({
-    queryKey: ['conversations'],
-    queryFn: messages.getConversations
+  // Получаем информацию об объявлении для выбранного диалога
+  const { data: listingData, isLoading: isLoadingListing } = useQuery<Listing>({
+    queryKey: ['listing', selectedListingId],
+    queryFn: async () => {
+      const response = await listings.getById(selectedListingId!);
+      return response.data;
+    },
+    enabled: !!selectedListingId,
   });
 
-  console.log('Raw Conversations Data:', conversationsData); // Debug log for raw data
+  // Получаем список диалогов пользователя
+  const { data: conversationsData, isLoading: isLoadingConversations } = useQuery<Message[]>({
+    queryKey: ['conversations'],
+    queryFn: messages.getConversations,
+    enabled: isAuthenticated,
+  });
 
-  const { data: messagesData, isLoading: isLoadingMessages } = useQuery({
-    queryKey: ['messages', selectedListingId],
+  // Получаем сообщения для выбранного диалога
+  const { data: messagesData, isLoading: isLoadingMessages } = useQuery<{
+    data: Message[],
+    listingStatus: { isDeleted: boolean; deletedAt: string | null; };
+  }>({
+    queryKey: ['messages', selectedListingId, selectedOtherParticipantId],
     queryFn: async () => {
-      if (!selectedListingId) return { data: [] };
-      const response = await messages.getByListing(selectedListingId);
-      console.log('Raw Messages Response:', response); // Debug log for raw response
+      if (!selectedListingId || !selectedOtherParticipantId) return { data: [], listingStatus: { isDeleted: false, deletedAt: null } };
+      const response = await messages.getByListing(selectedListingId, selectedOtherParticipantId);
       return response;
     },
-    enabled: !!selectedListingId
+    enabled: !!selectedListingId && !!selectedOtherParticipantId && isAuthenticated,
   });
 
-  console.log('Raw Messages Data:', messagesData); // Debug log for raw data
-
-  // Проверяем структуру данных
-  const conversations = Array.isArray(conversationsData) ? conversationsData : [];
-  const messagesList = Array.isArray(messagesData?.data) ? messagesData.data : [];
-
-  console.log('Processed Conversations:', conversations); // Debug log for processed conversations
-  console.log('Processed Messages:', messagesList); // Debug log for processed messages
-
+  // Мутация для отправки сообщения
   const sendMessageMutation = useMutation({
-    mutationFn: (content: string) => messages.send(selectedListingId!, content),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['messages', selectedListingId] });
+    mutationFn: ({ listingId, content, receiverId }: { listingId: string, content: string, receiverId: string }) => 
+      messages.send(listingId, content, receiverId),
+    onSuccess: (data) => {
+      setNewMessageContent('');
       queryClient.invalidateQueries({ queryKey: ['conversations'] });
+    },
+    onError: (error) => {
+      console.error('Error sending message:', error);
     }
   });
 
-  const handleSendMessage = (e: React.FormEvent<HTMLFormElement>) => {
-    e.preventDefault();
-    const form = e.currentTarget;
-    const content = new FormData(form).get('content') as string;
-    if (content && selectedListingId) {
-      sendMessageMutation.mutate(content);
-      form.reset();
-    }
-  };
+  // Прокрутка к последнему сообщению
+  useEffect(() => {
+    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+  }, [messagesData?.data]);
 
-  const isCurrentUser = (message: Message) => {
-    return message.senderId === user?.id;
-  };
+  // Инициализация Socket.IO
+  useEffect(() => {
+    if (!isAuthenticated || !user?.id || !selectedListingId) return;
+
+    const socket = io(import.meta.env.VITE_REACT_APP_SERVER_URL || 'http://localhost:5000', {
+      withCredentials: true,
+    });
+    socketRef.current = socket;
+
+    socket.on('connect', () => {
+      console.log('Socket connected:', socket.id);
+      socket.emit('join_chat', { listingId: selectedListingId, userId: user.id });
+    });
+
+    socket.on('new_message', (newMessage: Message) => {
+      // Проверяем, относится ли сообщение к текущему активному диалогу
+      if (newMessage.listing.id === selectedListingId && 
+          ((newMessage.senderId === user.id && newMessage.receiverId === selectedOtherParticipantId) ||
+           (newMessage.senderId === selectedOtherParticipantId && newMessage.receiverId === user.id))) {
+        queryClient.setQueryData(['messages', selectedListingId, selectedOtherParticipantId], (oldData: any) => {
+          return { ...oldData, data: [...(oldData?.data || []), newMessage] };
+        });
+      }
+      // Инвалидируем кэш разговоров, чтобы обновить список диалогов (показывая новые сообщения)
+      queryClient.invalidateQueries({ queryKey: ['conversations'] });
+    });
+
+    socket.on('disconnect', () => {
+      console.log('Socket disconnected');
+    });
+
+    socket.on('connect_error', (err) => {
+      console.error('Socket connection error:', err.message);
+    });
+
+    return () => {
+      if (socketRef.current) {
+        socketRef.current.disconnect();
+        socketRef.current = null;
+      }
+    };
+  }, [isAuthenticated, user?.id, selectedListingId, selectedOtherParticipantId]);
 
   // Обновляем состояние isListingDeleted при получении данных
   useEffect(() => {
     if (messagesData?.listingStatus) {
       setIsListingDeleted(messagesData.listingStatus.isDeleted);
+    } else {
+      setIsListingDeleted(false); // Сброс, если нет данных
     }
   }, [messagesData]);
+
+  // Автоматический выбор диалога при загрузке с URL параметрами
+  useEffect(() => {
+    if (initialListingId && initialOtherParticipantId) {
+      setSelectedListingId(initialListingId);
+      setSelectedOtherParticipantId(initialOtherParticipantId);
+    }
+  }, [initialListingId, initialOtherParticipantId]);
+
+  const handleSelectConversation = (listingId: string, otherParticipantId: string) => {
+    setSelectedListingId(listingId);
+    setSelectedOtherParticipantId(otherParticipantId);
+    // При выборе нового диалога прокручиваем к последнему сообщению
+    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+  };
+
+  const handleSendMessage = (e: React.FormEvent<HTMLFormElement>) => {
+    e.preventDefault();
+    if (newMessageContent.trim() && selectedListingId && selectedOtherParticipantId && user?.id) {
+      sendMessageMutation.mutate({
+        listingId: selectedListingId,
+        content: newMessageContent,
+        receiverId: selectedOtherParticipantId,
+      });
+    }
+  };
+
+  const isOwnMessage = (message: Message) => message.senderId === user?.id;
+
+  const messagesList = messagesData?.data || [];
+  const conversations = conversationsData || [];
+
+  // Получаем данные о другом участнике для отображения в заголовке
+  const otherParticipant = messagesList.find(msg => 
+    msg.sender.id === selectedOtherParticipantId || msg.receiver.id === selectedOtherParticipantId
+  )?.sender.id === selectedOtherParticipantId 
+    ? messagesList.find(msg => msg.sender.id === selectedOtherParticipantId)?.sender
+    : messagesList.find(msg => msg.receiver.id === selectedOtherParticipantId)?.receiver;
 
   return (
     <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
@@ -123,12 +210,15 @@ const Messages: React.FC = () => {
               <div className="space-y-4">
                 {conversations.map((message: Message) => {
                   const isDeleted = message.listing.deletedAt != null;
+                  const participant = message.sender.id === user?.id ? message.receiver : message.sender;
+
                   return (
                     <button
-                      key={message.id}
-                      onClick={() => setSelectedListingId(message.listing?.id)}
+                      key={`${message.listing.id}-${participant.id}`}
+                      onClick={() => handleSelectConversation(message.listing.id, participant.id)}
                       className={`w-full text-left p-4 border rounded-lg hover:shadow-md transition-shadow ${
-                        selectedListingId === message.listing?.id ? 'bg-gray-50' : ''
+                        selectedListingId === message.listing.id && selectedOtherParticipantId === participant.id
+                          ? 'bg-gray-50' : ''
                       } ${isDeleted ? 'opacity-75' : ''}`}
                     >
                       <div className="flex items-center space-x-4">
@@ -150,7 +240,9 @@ const Messages: React.FC = () => {
                           <h3 className={`font-medium truncate ${isDeleted ? 'text-gray-500' : ''}`}>
                             {message.listing?.title || 'Объявление удалено'}
                           </h3>
-                          <p className="text-sm text-gray-500 truncate">{message.content}</p>
+                          <p className="text-sm text-gray-500 truncate">
+                            {participant.firstName} {participant.lastName}: {message.content}
+                          </p>
                           <p className="text-xs text-gray-400">
                             {new Date(message.createdAt).toLocaleString()}
                           </p>
@@ -166,24 +258,61 @@ const Messages: React.FC = () => {
 
         {/* Правая панель с сообщениями */}
         <div className="lg:col-span-2">
-          {selectedListingId ? (
-            <div className="bg-white rounded-lg shadow-md">
+          {selectedListingId && selectedOtherParticipantId ? (
+            <div className="bg-white rounded-lg shadow-md h-[700px] flex flex-col">
+              {/* Заголовок чата */}
+              <div className="flex items-center space-x-4 p-4 border-b">
+                {isLoadingListing ? (
+                  <div className="flex items-center space-x-4">
+                    <div className="w-16 h-16 bg-gray-200 rounded flex items-center justify-center">
+                      <span className="text-gray-400">Загрузка...</span>
+                    </div>
+                    <div>
+                      <h3 className="font-medium text-gray-500">Загрузка объявления...</h3>
+                    </div>
+                  </div>
+                ) : listingData && listingData.images && listingData.images.length > 0 ? (
+                  <>
+                    <img
+                      src={listingData.images[0]}
+                      alt={listingData.title}
+                      className="w-16 h-16 object-cover rounded"
+                    />
+                    <div>
+                      <h3 className="font-semibold">{listingData.title}</h3>
+                      <p className="text-sm text-gray-600">
+                        Разговор с: {otherParticipant?.firstName} {otherParticipant?.lastName}
+                      </p>
+                    </div>
+                  </>
+                ) : (
+                  <div className="flex items-center space-x-4">
+                    <div className="w-16 h-16 bg-gray-200 rounded flex items-center justify-center">
+                      <span className="text-gray-400">Нет изображения</span>
+                    </div>
+                    <div>
+                      <h3 className="font-medium text-gray-500">Объявление не найдено</h3>
+                    </div>
+                  </div>
+                )}
+              </div>
+
               {isLoadingMessages ? (
                 <LoadingSpinner />
               ) : (
                 <>
-                  <div className="h-96 overflow-y-auto p-4 space-y-4">
+                  <div className="flex-1 overflow-y-auto p-4 space-y-4">
                     {messagesList.length > 0 ? (
                       messagesList.map((message: Message) => (
                         <div
                           key={message.id}
                           className={`flex ${
-                            isCurrentUser(message) ? 'justify-end' : 'justify-start'
+                            isOwnMessage(message) ? 'justify-end' : 'justify-start'
                           }`}
                         >
                           <div
                             className={`max-w-[70%] p-3 rounded-lg ${
-                              isCurrentUser(message)
+                              isOwnMessage(message)
                                 ? 'bg-primary-600 text-white'
                                 : 'bg-gray-100 text-gray-900'
                             }`}
@@ -197,9 +326,10 @@ const Messages: React.FC = () => {
                       ))
                     ) : (
                       <div className="text-center text-gray-500">
-                        Нет сообщений
+                        Нет сообщений в этом диалоге. Начните общение!
                       </div>
                     )}
+                    <div ref={messagesEndRef} />
                   </div>
 
                   {!isListingDeleted ? (
@@ -208,13 +338,15 @@ const Messages: React.FC = () => {
                         <input
                           type="text"
                           name="content"
+                          value={newMessageContent}
+                          onChange={(e) => setNewMessageContent(e.target.value)}
                           placeholder="Введите сообщение..."
                           className="flex-1 border rounded-lg px-4 py-2 focus:outline-none focus:ring-2 focus:ring-primary-600"
                           required
                         />
                         <button
                           type="submit"
-                          disabled={sendMessageMutation.isPending}
+                          disabled={sendMessageMutation.isPending || !newMessageContent.trim()}
                           className="bg-primary-600 text-white px-6 py-2 rounded-lg hover:bg-primary-700 disabled:opacity-50 disabled:cursor-not-allowed"
                         >
                           {sendMessageMutation.isPending ? 'Отправка...' : 'Отправить'}
@@ -230,8 +362,8 @@ const Messages: React.FC = () => {
               )}
             </div>
           ) : (
-            <div className="bg-white rounded-lg shadow-md flex items-center justify-center h-96">
-              <p className="text-gray-500">Выберите диалог слева</p>
+            <div className="bg-white rounded-lg shadow-md flex items-center justify-center h-[700px]">
+              <p className="text-gray-500">Выберите диалог слева или перейдите со страницы объявления</p>
             </div>
           )}
         </div>

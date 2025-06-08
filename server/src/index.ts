@@ -41,7 +41,7 @@ app.use('/uploads', express.static(path.join(__dirname, '../uploads')));
 // Routes
 app.use('/api/auth', userRoutes);
 app.use('/api/listings', listingRoutes);
-app.use('/api/messages', messageRoutes);
+app.use('/api/messages', messageRoutes(io));
 app.use('/api/cars', carRoutes);
 
 // Socket.io connection handling
@@ -50,32 +50,6 @@ io.on('connection', (socket) => {
 
   socket.on('join_chat', (data: { listingId: string, userId: string }) => {
     socket.join(`chat_${data.listingId}`);
-  });
-
-  socket.on('send_message', async (data: {
-    content: string;
-    senderId: string;
-    receiverId: string;
-    listingId: string;
-  }) => {
-    try {
-      const message = await prisma.message.create({
-        data: {
-          content: data.content,
-          senderId: data.senderId,
-          receiverId: data.receiverId,
-          listingId: data.listingId,
-        },
-        include: {
-          sender: true,
-          receiver: true,
-        },
-      });
-
-      io.to(`chat_${data.listingId}`).emit('new_message', message);
-    } catch (error) {
-      console.error('Error sending message:', error);
-    }
   });
 
   socket.on('disconnect', () => {

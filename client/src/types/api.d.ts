@@ -57,6 +57,7 @@ export interface CreateListingData {
 }
 
 export interface SendMessageData {
-  content: string;
   listingId: string;
+  content: string;
+  receiverId: string;
 } 
